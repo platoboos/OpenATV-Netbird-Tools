@@ -1,0 +1,9 @@
+.cache/
+logs/
+boxes.csv
+*.key
+*.pem
+*.p12
+*.pfx
+*.log
+
