@@ -1,9 +1,14 @@
 .cache/
 logs/
 boxes.csv
+routers.csv
+peers.csv
+unmanaged-peers.csv
+.netbird-automation.json
+.secrets/
+.known_hosts_*
 *.key
 *.pem
 *.p12
 *.pfx
 *.log
-

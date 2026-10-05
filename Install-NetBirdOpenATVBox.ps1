@@ -10,11 +10,13 @@ param(
     [Security.SecureString]$SetupKey,
     [string]$ManagementUrl,
     [string]$SshKeyPath = (Join-Path $env:USERPROFILE '.ssh\netbird-receivers_ed25519'),
-    [string]$Inventory = (Join-Path $PSScriptRoot 'boxes.csv')
+    [string]$Inventory
 )
 
 $ErrorActionPreference = 'Stop'
-$installerScript = Join-Path $PSScriptRoot 'install-netbird-openatv.sh'
+$scriptDirectory = Split-Path -Parent $PSCommandPath
+if ([string]::IsNullOrWhiteSpace($Inventory)) { $Inventory = Join-Path $scriptDirectory 'boxes.csv' }
+$installerScript = Join-Path $scriptDirectory 'install-netbird-openatv.sh'
 
 if ([string]::IsNullOrWhiteSpace($BoxAddress)) {
     $BoxAddress = (Read-Host 'OpenVPN-IP oder aktuell erreichbare IP der Box').Trim()
@@ -107,7 +109,7 @@ $sshOptions = @(
     '-o', 'StrictHostKeyChecking=accept-new'
 )
 
-$probeOutput = & ssh.exe @sshOptions "root@$BoxAddress" "uname -m; opkg print-architecture 2>/dev/null || true; command -v start-stop-daemon; command -v update-rc.d" 2>&1
+$probeOutput = & ssh.exe @sshOptions "root@$BoxAddress" "uname -m; opkg print-architecture 2>/dev/null || true; command -v update-rc.d" 2>&1
 if ($LASTEXITCODE -ne 0) {
     throw "SSH-Anmeldung mit dem Receiver-Schluessel fehlgeschlagen.`n$($probeOutput -join "`n")"
 }
@@ -129,12 +131,12 @@ else {
     throw "Nicht unterstuetzte Receiver-Architektur:`n$probeText"
 }
 
-if ($probeText -notmatch '(?m)(^|/)start-stop-daemon\s*$' -or $probeText -notmatch '(?m)(^|/)update-rc\.d\s*$') {
+if ($probeText -notmatch '(?m)(^|/)update-rc\.d\s*$') {
     throw "Erforderliche OpenATV-Systemwerkzeuge fehlen:`n$probeText"
 }
 Write-Host "Erkannte Paketarchitektur: $packageArchitecture" -ForegroundColor Green
 
-$cacheDirectory = Join-Path $PSScriptRoot ".cache\netbird\$Version"
+$cacheDirectory = Join-Path $scriptDirectory ".cache\netbird\$Version"
 New-Item -ItemType Directory -Force -Path $cacheDirectory | Out-Null
 $assetName = "netbird_${Version}_linux_${packageArchitecture}.tar.gz"
 $assetPath = Join-Path $cacheDirectory $assetName

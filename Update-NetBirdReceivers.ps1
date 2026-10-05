@@ -3,16 +3,21 @@ param(
     [ValidatePattern('^\d+\.\d+\.\d+$')]
     [string]$Version,
 
-    [string]$Inventory = (Join-Path $PSScriptRoot 'boxes.csv'),
+    [string]$Inventory,
     [string]$KeyPath = (Join-Path $env:USERPROFILE '.ssh\netbird-receivers_ed25519'),
+    [string]$CompatibilityKeyPath,
     [string[]]$BoxName,
-    [int]$ReconnectTimeoutSeconds = 180,
+    [int]$ReconnectTimeoutSeconds = 480,
     [switch]$Force
 )
 
 $ErrorActionPreference = 'Stop'
-$helperScript = Join-Path $PSScriptRoot 'receiver-netbird-update.sh'
-$logDirectory = Join-Path $PSScriptRoot 'logs'
+$scriptDirectory = Split-Path -Parent $PSCommandPath
+if ([string]::IsNullOrWhiteSpace($Inventory)) { $Inventory = Join-Path $scriptDirectory 'boxes.csv' }
+if ([string]::IsNullOrWhiteSpace($CompatibilityKeyPath)) { $CompatibilityKeyPath = Join-Path $scriptDirectory '.secrets\netbird-receivers_rsa' }
+$helperScript = Join-Path $scriptDirectory 'receiver-netbird-update.sh'
+$initScript = Join-Path $scriptDirectory 'netbird-init-openatv.sh'
+$logDirectory = Join-Path $scriptDirectory 'logs'
 
 if ([string]::IsNullOrWhiteSpace($Version)) {
     Write-Host 'Neueste stabile NetBird-Version ermitteln...' -ForegroundColor Cyan
@@ -33,7 +38,7 @@ if ([string]::IsNullOrWhiteSpace($Version)) {
     Write-Host "Ermittelte stabile Version: $Version" -ForegroundColor Green
 }
 
-$cacheDirectory = Join-Path $PSScriptRoot ".cache\netbird\$Version"
+$cacheDirectory = Join-Path $scriptDirectory ".cache\netbird\$Version"
 
 foreach ($command in @('ssh.exe', 'scp.exe')) {
     if (-not (Get-Command $command -ErrorAction SilentlyContinue)) {
@@ -41,7 +46,7 @@ foreach ($command in @('ssh.exe', 'scp.exe')) {
     }
 }
 
-foreach ($path in @($Inventory, $KeyPath, $helperScript)) {
+foreach ($path in @($Inventory, $KeyPath, $helperScript, $initScript)) {
     if (-not (Test-Path -LiteralPath $path)) {
         throw "Erforderliche Datei fehlt: $path"
     }
@@ -64,8 +69,12 @@ $sshOptions = @(
     '-i', $KeyPath,
     '-o', 'BatchMode=yes',
     '-o', 'ConnectTimeout=12',
-    '-o', 'StrictHostKeyChecking=accept-new'
+    '-o', 'StrictHostKeyChecking=accept-new',
+    '-o', 'PubkeyAcceptedAlgorithms=+ssh-rsa'
 )
+if (Test-Path -LiteralPath $CompatibilityKeyPath) {
+    $sshOptions += @('-i', $CompatibilityKeyPath)
+}
 
 function Invoke-ReceiverSsh {
     param(
@@ -73,9 +82,22 @@ function Invoke-ReceiverSsh {
         [Parameter(Mandatory)] [string]$Command
     )
 
-    $output = & ssh.exe @sshOptions "root@$IP" $Command 2>&1
+    # Windows PowerShell wandelt Text auf stderr (z. B. die normale
+    # SSH-Meldung zu einem neuen Host-Key) bei ErrorActionPreference=Stop in
+    # eine Ausnahme um. Fuer native SSH-Aufrufe entscheidet ausschliesslich
+    # der Exitcode; dadurch koennen fehlende Schluessel sauber als
+    # SSH_SETUP_REQUIRED protokolliert werden.
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $output = & ssh.exe @sshOptions "root@$IP" $Command 2>&1
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
     [pscustomobject]@{
-        ExitCode = $LASTEXITCODE
+        ExitCode = $exitCode
         Output   = ($output -join "`n")
     }
 }
@@ -139,10 +161,18 @@ foreach ($box in $boxes) {
     Write-Host ''
     Write-Host "[$($box.Name)] $($box.IP)" -ForegroundColor Cyan
 
+    if ([string]$box.Connected -eq 'False') {
+        Write-Warning 'Box ist offline; Update wird bis zum naechsten Lauf zurueckgestellt.'
+        Add-Result -Box $box -Architecture 'unbekannt' -OldVersion ([string]$box.Version) -Status 'DEFERRED_OFFLINE' -Details 'NetBird meldet den Peer als offline'
+        continue
+    }
+
     try {
         $probe = Invoke-ReceiverSsh -IP $box.IP -Command "uname -m; opkg print-architecture 2>/dev/null || true; /usr/bin/netbird version 2>/dev/null || true"
         if ($probe.ExitCode -ne 0) {
-            throw "SSH nicht erreichbar: $($probe.Output)"
+            Write-Warning 'SSH ist noch nicht eingerichtet oder durch eine Policy gesperrt. Box wird zurueckgestellt.'
+            Add-Result -Box $box -Architecture 'unbekannt' -OldVersion ([string]$box.Version) -Status 'SSH_SETUP_REQUIRED' -Details $probe.Output
+            continue
         }
 
         $architecture = if ($probe.Output -match '(?m)^armv7l\s*$') {
@@ -173,7 +203,7 @@ foreach ($box in $boxes) {
 
         $archive = Get-NetBirdPackage -Package $architecture
 
-        Write-Host 'Archiv und Update-Helfer uebertragen...'
+        Write-Host 'Archiv, Dienststeuerung und Update-Helfer uebertragen...'
         & scp.exe -O @sshOptions $archive "root@$($box.IP):/tmp/netbird-update.tar.gz"
         if ($LASTEXITCODE -ne 0) {
             throw 'Upload des NetBird-Archivs fehlgeschlagen.'
@@ -182,8 +212,12 @@ foreach ($box in $boxes) {
         if ($LASTEXITCODE -ne 0) {
             throw 'Upload des Update-Helfers fehlgeschlagen.'
         }
+        & scp.exe -O @sshOptions $initScript "root@$($box.IP):/tmp/netbird-init-openatv.sh"
+        if ($LASTEXITCODE -ne 0) {
+            throw 'Upload der NetBird-Dienststeuerung fehlgeschlagen.'
+        }
 
-        $schedule = Invoke-ReceiverSsh -IP $box.IP -Command "chmod 700 /tmp/netbird-receiver-update.sh && sh /tmp/netbird-receiver-update.sh '$Version'"
+        $schedule = Invoke-ReceiverSsh -IP $box.IP -Command "chmod 700 /tmp/netbird-receiver-update.sh /tmp/netbird-init-openatv.sh && cp /tmp/netbird-init-openatv.sh /etc/init.d/netbird && chmod 755 /etc/init.d/netbird && sh /tmp/netbird-receiver-update.sh '$Version'"
         if ($schedule.ExitCode -ne 0 -or $schedule.Output -notmatch 'UPDATE_SCHEDULED') {
             throw "Update konnte nicht geplant werden: $($schedule.Output)"
         }

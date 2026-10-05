@@ -1,8 +1,7 @@
 # NetBird-Updates fuer OpenATV-Receiver
 
 Diese Dateien aktualisieren ausschliesslich die NetBird-Clients auf den
-OpenATV-Receivern. Das vorhandene `netbird-update.sh` ist dagegen fuer den
-NetBird-Server auf dem VPS bestimmt und wird hiervon nicht verwendet.
+OpenATV-Receivern. Sie verändern keinen NetBird-Management-Server.
 
 ## Dateien
 
@@ -20,7 +19,7 @@ NetBird-Server auf dem VPS bestimmt und wird hiervon nicht verwendet.
 Direkt auf jeder Box genuegt:
 
 ```sh
-wget -O /tmp/install-netbird.sh https://raw.githubusercontent.com/platoboos/openatv-netbird-tools/main/install-netbird-openatv.sh
+wget -O /tmp/install-netbird.sh https://raw.githubusercontent.com/platoboos/OpenATV-Netbird-Tools/main/install-netbird-openatv.sh
 sh /tmp/install-netbird.sh
 ```
 
@@ -87,7 +86,7 @@ Passwort wird weder gespeichert noch in `boxes.csv` eingetragen.
 Eine einzelne Box kann so vorbereitet werden:
 
 ```powershell
-.\Install-ReceiverSshKey.ps1 -BoxName box-bodo
+.\Install-ReceiverSshKey.ps1 -BoxName box-test
 ```
 
 ## Erst eine Testbox aktualisieren
@@ -95,13 +94,13 @@ Eine einzelne Box kann so vorbereitet werden:
 Bei einer neuen NetBird-Version immer zuerst nur eine Box aktualisieren:
 
 ```powershell
-.\Update-NetBirdReceivers.ps1 -Version 0.78.2 -BoxName box-bodo
+.\Update-NetBirdReceivers.ps1 -Version 0.XX.X -BoxName box-test
 ```
 
 Wenn die Testbox wieder `Management: Connected` meldet, folgen alle Boxen:
 
 ```powershell
-.\Update-NetBirdReceivers.ps1 -Version 0.78.2
+.\Update-NetBirdReceivers.ps1 -Version 0.XX.X
 ```
 
 Boxen, auf denen diese Version bereits installiert ist, werden automatisch
@@ -112,12 +111,15 @@ uebersprungen. Mit `-Force` kann eine Version erneut installiert werden.
 - Die offiziellen Archive werden nur einmal pro Architektur heruntergeladen.
 - Die SHA-256-Pruefsumme aus dem offiziellen Release wird kontrolliert.
 - Die Architektur jeder Box wird vor dem Upload automatisch erkannt.
-- Die bisherige Binaerdatei wird auf der Box gesichert.
+- Die bisherige Version wird vor dem Austausch gesichert.
 - Die Boxen werden nacheinander aktualisiert.
 - Wenn nach dem Neustart kein NetBird-Socket erscheint, erfolgt auf der Box ein
   automatischer Rollback auf die vorherige Binaerdatei.
 - Das Skript wartet nach jedem Neustart auf `Management: Connected`.
 - Ergebnisse werden als CSV im Unterordner `logs` gespeichert.
+- Alte Images ohne `start-stop-daemon` werden ebenfalls unterstützt.
+- Im Low-Flash-Modus bleibt nur das komprimierte Archiv dauerhaft im Flash;
+  die große Binärdatei wird beim Start nach `/tmp` entpackt.
 
 ## Inventar pflegen
 

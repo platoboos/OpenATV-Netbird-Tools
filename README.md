@@ -28,6 +28,19 @@ Eingabe nicht angezeigt oder gespeichert.
 Die PowerShell-Helfer koennen mehrere Receiver nacheinander ueber ihre
 NetBird-IP aktualisieren. `boxes.example.csv` zeigt das Format der lokalen
 Inventardatei. Die echte `boxes.csv` und Update-Protokolle werden bewusst nicht
-versioniert.
+versioniert. Die Verwaltung erfolgt ausschließlich über die vom Anwender
+eingetragenen Namen und NetBird-IP-Adressen.
 
 Weitere Einzelheiten stehen in `RECEIVER-UPDATES.md`.
+
+## Kompatibilität mit alten und kleinen Receivern
+
+Die Dienststeuerung unterstützt auch ältere OpenATV-Images ohne
+`start-stop-daemon` und erkennt laufende NetBird-Prozesse bei fehlender oder
+veralteter PID-Datei. Für Receiver mit sehr kleinem Flash stehen ein
+Low-Flash-Wrapper und ein speicherschonender Updateweg zur Verfügung. Dabei
+liegt die komprimierte NetBird-Datei dauerhaft im Flash und wird beim Start
+nach `/tmp` entpackt.
+
+Dieses Repository enthält keine Management-Adresse, Setup-Keys, Passwörter,
+privaten SSH-Schlüssel oder persönlichen Geräte-Inventare.
