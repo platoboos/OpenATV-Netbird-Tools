@@ -1,3 +1,4 @@
+Attempting to perform the InitializeDefaultDrives operation on the 'FileSystem' provider failed.
 [CmdletBinding()]
 param(
     [ValidatePattern('^\d+\.\d+\.\d+$')]
@@ -69,6 +70,8 @@ $sshOptions = @(
     '-i', $KeyPath,
     '-o', 'BatchMode=yes',
     '-o', 'ConnectTimeout=12',
+    '-o', 'ServerAliveInterval=10',
+    '-o', 'ServerAliveCountMax=3',
     '-o', 'StrictHostKeyChecking=accept-new',
     '-o', 'PubkeyAcceptedAlgorithms=+ssh-rsa'
 )
@@ -168,7 +171,7 @@ foreach ($box in $boxes) {
     }
 
     try {
-        $probe = Invoke-ReceiverSsh -IP $box.IP -Command "uname -m; opkg print-architecture 2>/dev/null || true; /usr/bin/netbird version 2>/dev/null || true"
+        $probe = Invoke-ReceiverSsh -IP $box.IP -Command "uname -m; opkg print-architecture 2>/dev/null || true; if [ -f /usr/lib/netbird-runtime/netbird.tar.gz ]; then echo LOWFLASH_MODE; else /usr/bin/netbird version 2>/dev/null || true; fi"
         if ($probe.ExitCode -ne 0) {
             Write-Warning 'SSH ist noch nicht eingerichtet oder durch eine Policy gesperrt. Box wird zurueckgestellt.'
             Add-Result -Box $box -Architecture 'unbekannt' -OldVersion ([string]$box.Version) -Status 'SSH_SETUP_REQUIRED' -Details $probe.Output
@@ -192,7 +195,15 @@ foreach ($box in $boxes) {
         }
 
         $versionMatches = [regex]::Matches($probe.Output, '(?m)^\d+\.\d+\.\d+\s*$')
-        $oldVersion = if ($versionMatches.Count -gt 0) { $versionMatches[$versionMatches.Count - 1].Value.Trim() } else { 'unbekannt' }
+        $oldVersion = if ($versionMatches.Count -gt 0) {
+            $versionMatches[$versionMatches.Count - 1].Value.Trim()
+        }
+        elseif ($probe.Output -match '(?m)^LOWFLASH_MODE\s*$' -and [string]$box.Version -match '^\d+\.\d+\.\d+$') {
+            [string]$box.Version
+        }
+        else {
+            'unbekannt'
+        }
 
         Write-Host "Architektur: $architecture; installiert: $oldVersion" -ForegroundColor Gray
         if (-not $Force -and $oldVersion -eq $Version) {
@@ -204,9 +215,35 @@ foreach ($box in $boxes) {
         $archive = Get-NetBirdPackage -Package $architecture
 
         Write-Host 'Archiv, Dienststeuerung und Update-Helfer uebertragen...'
-        & scp.exe -O @sshOptions $archive "root@$($box.IP):/tmp/netbird-update.tar.gz"
-        if ($LASTEXITCODE -ne 0) {
-            throw 'Upload des NetBird-Archivs fehlgeschlagen.'
+        $localArchiveHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
+        $remoteArchive = Invoke-ReceiverSsh -IP $box.IP -Command "sha256sum /tmp/netbird-update.tar.gz 2>/dev/null || true"
+        $remoteArchiveIsComplete = $remoteArchive.ExitCode -eq 0 -and $remoteArchive.Output -match "(?im)^$([regex]::Escape($localArchiveHash))\s+"
+
+        if ($remoteArchiveIsComplete) {
+            Write-Host 'Vollstaendiges, bereits uebertragenes Archiv wird wiederverwendet.' -ForegroundColor Green
+        }
+        else {
+            $previousPreference = $ErrorActionPreference
+            try {
+                $ErrorActionPreference = 'Continue'
+                & scp.exe -O @sshOptions $archive "root@$($box.IP):/tmp/netbird-update.tar.gz"
+                $scpExitCode = $LASTEXITCODE
+            }
+            finally {
+                $ErrorActionPreference = $previousPreference
+            }
+
+            if ($scpExitCode -ne 0) {
+                # Bei langsamen MIPS-Boxen kann die SSH-Verbindung direkt nach
+                # dem letzten Byte abbrechen. Eine identische SHA-256-Summe ist
+                # in diesem Fall verlaesslicher als der scp-Rueckgabecode.
+                $remoteArchive = Invoke-ReceiverSsh -IP $box.IP -Command "sha256sum /tmp/netbird-update.tar.gz 2>/dev/null || true"
+                $remoteArchiveIsComplete = $remoteArchive.ExitCode -eq 0 -and $remoteArchive.Output -match "(?im)^$([regex]::Escape($localArchiveHash))\s+"
+                if (-not $remoteArchiveIsComplete) {
+                    throw 'Upload des NetBird-Archivs fehlgeschlagen und die entfernte Datei ist nicht vollstaendig.'
+                }
+                Write-Warning 'SSH wurde nach dem Upload getrennt; das Archiv ist laut SHA-256 dennoch vollstaendig.'
+            }
         }
         & scp.exe -O @sshOptions $helperScript "root@$($box.IP):/tmp/netbird-receiver-update.sh"
         if ($LASTEXITCODE -ne 0) {
@@ -258,3 +295,4 @@ $results | Format-Table Name, IP, Architecture, OldVersion, Target, Status -Auto
 if ($results.Status -contains 'FAILED') {
     exit 1
 }
+

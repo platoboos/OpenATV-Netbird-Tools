@@ -1,3 +1,4 @@
+Attempting to perform the InitializeDefaultDrives operation on the 'FileSystem' provider failed.
 #!/bin/sh
 
 set -u
@@ -27,6 +28,11 @@ trap 'rm -rf "$WORKDIR" "$LOCKDIR"' EXIT INT TERM
 for stale_workdir in /tmp/netbird-update.*; do
     [ -d "$stale_workdir" ] && [ "$stale_workdir" != "$WORKDIR" ] && [ "$stale_workdir" != "$LOCKDIR" ] && rm -rf "$stale_workdir"
 done
+# Abgebrochene Low-Flash-Laeufe koennen eine fast vollstaendige Archivkopie
+# im kleinen RAM-Dateisystem hinterlassen. Da der Lock fuer diesen Lauf bereits
+# exklusiv gehalten wird, gehoeren vorhandene Backup-Dateien sicher zu einem
+# frueheren Lauf und duerfen vor dem neuen Backup entfernt werden.
+rm -f /tmp/netbird-archive-backup-*.tar.gz /tmp/netbird-backup-* 2>/dev/null || true
 
 if [ ! -c /dev/net/tun ]; then
     if command -v modprobe >/dev/null 2>&1; then
@@ -153,3 +159,4 @@ nohup sh /tmp/netbird-finish-update.sh >/tmp/netbird-finish-update.nohup 2>&1 </
 rm -rf "$WORKDIR"
 echo "UPDATE_SCHEDULED: $OLD_VERSION -> $VERSION"
 exit 0
+
