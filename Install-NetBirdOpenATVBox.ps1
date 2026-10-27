@@ -1,3 +1,4 @@
+Attempting to perform the InitializeDefaultDrives operation on the 'FileSystem' provider failed.
 [CmdletBinding()]
 param(
     [string]$BoxAddress,
@@ -10,12 +11,14 @@ param(
     [Security.SecureString]$SetupKey,
     [string]$ManagementUrl,
     [string]$SshKeyPath = (Join-Path $env:USERPROFILE '.ssh\netbird-receivers_ed25519'),
+    [string]$KnownHostsPath,
     [string]$Inventory
 )
 
 $ErrorActionPreference = 'Stop'
 $scriptDirectory = Split-Path -Parent $PSCommandPath
 if ([string]::IsNullOrWhiteSpace($Inventory)) { $Inventory = Join-Path $scriptDirectory 'boxes.csv' }
+if ([string]::IsNullOrWhiteSpace($KnownHostsPath)) { $KnownHostsPath = Join-Path $scriptDirectory '.known_hosts_receivers' }
 $installerScript = Join-Path $scriptDirectory 'install-netbird-openatv.sh'
 
 if ([string]::IsNullOrWhiteSpace($BoxAddress)) {
@@ -76,6 +79,11 @@ Write-Host "Verwendete NetBird-Version: $Version" -ForegroundColor Green
 
 $keyDirectory = Split-Path -Parent $SshKeyPath
 New-Item -ItemType Directory -Force -Path $keyDirectory | Out-Null
+$knownHostsDirectory = Split-Path -Parent $KnownHostsPath
+New-Item -ItemType Directory -Force -Path $knownHostsDirectory | Out-Null
+if (-not (Test-Path -LiteralPath $KnownHostsPath)) {
+    New-Item -ItemType File -Path $KnownHostsPath | Out-Null
+}
 if (-not (Test-Path -LiteralPath $SshKeyPath)) {
     Write-Host "Receiver-SSH-Schluessel erzeugen: $SshKeyPath" -ForegroundColor Cyan
     & ssh-keygen.exe -t ed25519 -a 64 -f $SshKeyPath -N '""' -C 'netbird-receiver-updates'
@@ -97,7 +105,7 @@ Write-Host ''
 Write-Host "SSH-Schluessel auf $BoxAddress einrichten." -ForegroundColor Cyan
 Write-Host 'Falls die Box den Schluessel noch nicht kennt, jetzt einmal das bisherige root-Passwort eingeben.' -ForegroundColor Yellow
 $keyCommand = "umask 077; mkdir -p ~/.ssh; touch ~/.ssh/authorized_keys; grep -qxF '$publicKey' ~/.ssh/authorized_keys || printf '%s\n' '$publicKey' >> ~/.ssh/authorized_keys; chmod 700 ~/.ssh; chmod 600 ~/.ssh/authorized_keys"
-& ssh.exe -i $SshKeyPath -o ConnectTimeout=15 -o StrictHostKeyChecking=accept-new "root@$BoxAddress" $keyCommand
+& ssh.exe -i $SshKeyPath -o ConnectTimeout=15 -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=$KnownHostsPath" "root@$BoxAddress" $keyCommand
 if ($LASTEXITCODE -ne 0) {
     throw 'Der SSH-Schluessel konnte nicht auf der Box installiert werden.'
 }
@@ -106,7 +114,8 @@ $sshOptions = @(
     '-i', $SshKeyPath,
     '-o', 'BatchMode=yes',
     '-o', 'ConnectTimeout=15',
-    '-o', 'StrictHostKeyChecking=accept-new'
+    '-o', 'StrictHostKeyChecking=accept-new',
+    '-o', "UserKnownHostsFile=$KnownHostsPath"
 )
 
 $probeOutput = & ssh.exe @sshOptions "root@$BoxAddress" "uname -m; opkg print-architecture 2>/dev/null || true; command -v update-rc.d" 2>&1
@@ -188,8 +197,18 @@ try {
 
     Write-Host 'NetBird auf der Box installieren und anmelden...' -ForegroundColor Cyan
     $remoteCommand = "chmod 700 /tmp/install-netbird-openatv.sh && sh /tmp/install-netbird-openatv.sh '$Version' '$BoxName' '$ManagementUrl'"
-    $installOutput = ($plainSetupKey + "`n") | & ssh.exe @sshOptions "root@$BoxAddress" $remoteCommand 2>&1
-    $installExitCode = $LASTEXITCODE
+    # OpenSSH schreibt auch normale Remote-Hinweise auf stderr. Bei
+    # ErrorActionPreference=Stop wuerde PowerShell 7 diese faelschlich als
+    # Abbruch behandeln, bevor wir INSTALL_OK auswerten koennen.
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $installOutput = ($plainSetupKey + "`n") | & ssh.exe @sshOptions "root@$BoxAddress" $remoteCommand 2>&1
+        $installExitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
 }
 finally {
     $plainSetupKey = $null
@@ -224,3 +243,4 @@ Write-Host "Name:       $BoxName"
 Write-Host "NetBird-IP: $netBirdIp"
 Write-Host "Inventar:   $Inventory"
 Write-Host "Test:       ssh -i `"$SshKeyPath`" root@$netBirdIp"
+
