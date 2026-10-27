@@ -1,3 +1,4 @@
+Attempting to perform the InitializeDefaultDrives operation on the 'FileSystem' provider failed.
 #!/bin/sh
 
 set -u
@@ -14,6 +15,8 @@ INIT_BACKUP='/etc/init.d/netbird.before-install'
 HAD_DAEMON=0
 HAD_INIT=0
 STANDALONE=0
+OPKG_UPDATED=0
+DISABLE_IPV6=0
 
 fail() {
     echo "INSTALL_ERROR: $*" >&2
@@ -37,6 +40,27 @@ rollback() {
     if [ -x "$INIT_SCRIPT" ]; then
         "$INIT_SCRIPT" restart >/dev/null 2>&1 || true
     fi
+}
+
+ensure_kernel_module() {
+    MODULE_NAME="$1"
+    PACKAGE_NAME="$2"
+
+    if modprobe "$MODULE_NAME" 2>/dev/null; then
+        touch /etc/modules
+        grep -qx "$MODULE_NAME" /etc/modules 2>/dev/null || echo "$MODULE_NAME" >> /etc/modules
+        return 0
+    fi
+
+    echo "Kernelmodul $MODULE_NAME installieren..."
+    if [ "$OPKG_UPDATED" -eq 0 ]; then
+        opkg update || fail 'opkg update fehlgeschlagen'
+        OPKG_UPDATED=1
+    fi
+    opkg install "$PACKAGE_NAME" || fail "$PACKAGE_NAME konnte nicht installiert werden"
+    modprobe "$MODULE_NAME" 2>/dev/null || fail "Kernelmodul $MODULE_NAME konnte nicht geladen werden"
+    touch /etc/modules
+    grep -qx "$MODULE_NAME" /etc/modules 2>/dev/null || echo "$MODULE_NAME" >> /etc/modules
 }
 
 if [ -z "$VERSION" ] && [ -z "$HOSTNAME_VALUE" ] && [ -z "$MANAGEMENT_URL" ]; then
@@ -144,18 +168,29 @@ SETUP_KEY="$(printf '%s' "$SETUP_KEY_INPUT" | grep -Eo '[0-9A-Fa-f]{8}-[0-9A-Fa-
 SETUP_KEY_INPUT=''
 [ -n "$SETUP_KEY" ] || fail 'Kein gueltiger Setup-Key gefunden. Erwartet wird nur die 36-stellige UUID, zum Beispiel 12345678-1234-1234-1234-123456789abc'
 
-if ! modprobe tun 2>/dev/null; then
-    echo 'TUN-Modul installieren...'
-    opkg update || fail 'opkg update fehlgeschlagen'
-    opkg install kernel-module-tun || fail 'kernel-module-tun konnte nicht installiert werden'
-    modprobe tun 2>/dev/null || fail 'TUN-Modul konnte nicht geladen werden'
-fi
+ensure_kernel_module tun kernel-module-tun
+
+# NetBird ab 0.81 benoetigt auf einigen alten OpenATV-Kerneln diese
+# Netfilter-Module. Neuere Images haben sie bereits fest im Kernel oder laden
+# sie mit modprobe; nur fehlende Module werden ueber opkg nachinstalliert.
+ensure_kernel_module iptable_mangle "kernel-module-iptable-mangle-$(uname -r)"
+ensure_kernel_module xt_conntrack "kernel-module-xt-conntrack-$(uname -r)"
+ensure_kernel_module xt_mark "kernel-module-xt-mark-$(uname -r)"
 
 mkdir -p /dev/net /var/run /var/log/netbird /var/lib/netbird || fail 'Verzeichnisse konnten nicht angelegt werden'
 [ -c /dev/net/tun ] || mknod /dev/net/tun c 10 200 || fail '/dev/net/tun konnte nicht angelegt werden'
 chmod 666 /dev/net/tun
 touch /etc/modules
 grep -qx 'tun' /etc/modules 2>/dev/null || echo 'tun' >> /etc/modules
+
+# Manche alte Receiver-Kernel bieten keine IPv6-Mangle-Tabelle und das
+# passende Kernelmodul ist in deren Feed nicht vorhanden. Das IPv4-NetBird-
+# Netz funktioniert trotzdem vollstaendig; nur das IPv6-Overlay wird dann
+# gezielt deaktiviert.
+if ! command -v ip6tables >/dev/null 2>&1 || ! ip6tables -t mangle -L >/dev/null 2>&1; then
+    DISABLE_IPV6=1
+    echo 'IPv6-Mangle-Tabelle fehlt; NetBird-IPv6-Overlay wird deaktiviert.'
+fi
 
 rm -rf "$WORKDIR"
 mkdir -p "$WORKDIR" || fail 'Arbeitsverzeichnis konnte nicht angelegt werden'
@@ -318,8 +353,27 @@ if [ ! -S /var/run/netbird.sock ]; then
     fail 'NetBird-Socket wurde nicht erstellt'
 fi
 
+if [ "$DISABLE_IPV6" -eq 1 ]; then
+    i=0
+    while [ "$i" -lt 10 ] && [ ! -f /var/lib/netbird/default.json ]; do
+        sleep 1
+        i=$((i + 1))
+    done
+    [ -f /var/lib/netbird/default.json ] || fail 'NetBird-Konfiguration wurde nicht angelegt'
+    sed -i 's/"DisableIPv6":[[:space:]]*false/"DisableIPv6": true/' /var/lib/netbird/default.json || fail 'IPv6-Einstellung konnte nicht gespeichert werden'
+    grep -q '"DisableIPv6":[[:space:]]*true' /var/lib/netbird/default.json || fail 'IPv6-Einstellung wurde nicht uebernommen'
+    "$INIT_SCRIPT" restart || {
+        rollback
+        fail 'NetBird-Dienst konnte nach der IPv6-Anpassung nicht gestartet werden'
+    }
+fi
+
 echo 'Box am NetBird-Management anmelden...'
-UP_OUTPUT="$($DAEMON up --management-url "$MANAGEMENT_URL" --setup-key "$SETUP_KEY" --hostname "$HOSTNAME_VALUE" 2>&1)"
+if [ "$DISABLE_IPV6" -eq 1 ]; then
+    UP_OUTPUT="$($DAEMON up --management-url "$MANAGEMENT_URL" --setup-key "$SETUP_KEY" --hostname "$HOSTNAME_VALUE" --disable-ipv6 2>&1)"
+else
+    UP_OUTPUT="$($DAEMON up --management-url "$MANAGEMENT_URL" --setup-key "$SETUP_KEY" --hostname "$HOSTNAME_VALUE" 2>&1)"
+fi
 UP_EXIT=$?
 SETUP_KEY=''
 printf '%s\n' "$UP_OUTPUT"
@@ -349,3 +403,4 @@ done
 
 printf '%s\n' "$LAST_STATUS" >&2
 fail 'Management wurde nicht als Connected gemeldet'
+
