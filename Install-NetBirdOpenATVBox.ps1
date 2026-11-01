@@ -118,7 +118,7 @@ $sshOptions = @(
     '-o', "UserKnownHostsFile=$KnownHostsPath"
 )
 
-$probeOutput = & ssh.exe @sshOptions "root@$BoxAddress" "uname -m; opkg print-architecture 2>/dev/null || true; command -v update-rc.d" 2>&1
+$probeOutput = & ssh.exe @sshOptions "root@$BoxAddress" "uname -m; opkg print-architecture 2>/dev/null || true; command -v update-rc.d 2>/dev/null || true" 2>&1
 if ($LASTEXITCODE -ne 0) {
     throw "SSH-Anmeldung mit dem Receiver-Schluessel fehlgeschlagen.`n$($probeOutput -join "`n")"
 }
@@ -140,9 +140,6 @@ else {
     throw "Nicht unterstuetzte Receiver-Architektur:`n$probeText"
 }
 
-if ($probeText -notmatch '(?m)(^|/)update-rc\.d\s*$') {
-    throw "Erforderliche OpenATV-Systemwerkzeuge fehlen:`n$probeText"
-}
 Write-Host "Erkannte Paketarchitektur: $packageArchitecture" -ForegroundColor Green
 
 $cacheDirectory = Join-Path $scriptDirectory ".cache\netbird\$Version"
