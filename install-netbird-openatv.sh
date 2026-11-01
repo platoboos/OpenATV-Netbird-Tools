@@ -3,6 +3,12 @@ Attempting to perform the InitializeDefaultDrives operation on the 'FileSystem' 
 
 set -u
 
+# Einige alte OpenATV-Images liefern bei nicht-interaktiven SSH-Aufrufen einen
+# leeren oder unvollstaendigen PATH. Kernelwerkzeuge wie modprobe liegen dort
+# dennoch regulaer unter /sbin.
+PATH="/usr/sbin:/usr/bin:/sbin:/bin${PATH:+:$PATH}"
+export PATH
+
 VERSION="${1:-}"
 HOSTNAME_VALUE="${2:-}"
 MANAGEMENT_URL="${3:-}"
@@ -54,7 +60,13 @@ ensure_kernel_module() {
 
     echo "Kernelmodul $MODULE_NAME installieren..."
     if [ "$OPKG_UPDATED" -eq 0 ]; then
-        opkg update || fail 'opkg update fehlgeschlagen'
+        # Alte Images enthalten mitunter einzelne, nicht mehr erreichbare
+        # Zusatzfeeds. opkg update liefert dann Fehlercode 1, obwohl die
+        # offiziellen OpenATV-Paketlisten erfolgreich aktualisiert wurden.
+        # Entscheidend ist deshalb die anschliessende Paketinstallation.
+        if ! opkg update; then
+            echo 'Warnung: Mindestens ein opkg-Feed konnte nicht aktualisiert werden; Paketinstallation wird trotzdem versucht.' >&2
+        fi
         OPKG_UPDATED=1
     fi
     opkg install "$PACKAGE_NAME" || fail "$PACKAGE_NAME konnte nicht installiert werden"
@@ -224,6 +236,9 @@ mv -f "$DAEMON.new" "$DAEMON"
 cat > "$INIT_SCRIPT" <<'INITEOF'
 #!/bin/sh
 
+PATH="/usr/sbin:/usr/bin:/sbin:/bin${PATH:+:$PATH}"
+export PATH
+
 DAEMON="/usr/bin/netbird"
 PIDFILE="/var/run/netbird.pid"
 SOCKET="/var/run/netbird.sock"
@@ -336,6 +351,51 @@ if command -v update-rc.d >/dev/null 2>&1; then
         rollback
         fail 'NetBird-Autostart konnte nicht eingerichtet werden'
     }
+else
+    # Sehr alte OpenATV-Images (unter anderem einige VU+ Zero Images) haben
+    # weder update-rc.d noch insserv. Sie verwenden trotzdem klassische
+    # SysV-Runlevel-Verzeichnisse, daher werden die Links dort direkt gesetzt.
+    for RUNLEVEL in 2 3 4 5; do
+        mkdir -p "/etc/rc${RUNLEVEL}.d" || {
+            rollback
+            fail 'SysV-Runlevel-Verzeichnis konnte nicht angelegt werden'
+        }
+        ln -sf ../init.d/netbird "/etc/rc${RUNLEVEL}.d/S99netbird" || {
+            rollback
+            fail 'NetBird-Autostart-Link konnte nicht angelegt werden'
+        }
+    done
+    for RUNLEVEL in 0 1 6; do
+        mkdir -p "/etc/rc${RUNLEVEL}.d" || true
+        ln -sf ../init.d/netbird "/etc/rc${RUNLEVEL}.d/K01netbird" || true
+    done
+fi
+
+# Manche alten update-rc.d-Versionen melden Erfolg, legen fuer ein schlichtes
+# Init-Skript ohne LSB-Header aber keine Links an. In diesem Fall greifen wir
+# ebenfalls auf die direkten SysV-Links zurueck.
+AUTOSTART_FOUND=0
+for LINK in /etc/rc2.d/S*netbird /etc/rc3.d/S*netbird /etc/rc4.d/S*netbird /etc/rc5.d/S*netbird; do
+    if [ -L "$LINK" ]; then
+        AUTOSTART_FOUND=1
+        break
+    fi
+done
+if [ "$AUTOSTART_FOUND" -eq 0 ]; then
+    for RUNLEVEL in 2 3 4 5; do
+        mkdir -p "/etc/rc${RUNLEVEL}.d" || {
+            rollback
+            fail 'SysV-Runlevel-Verzeichnis konnte nicht angelegt werden'
+        }
+        ln -sf ../init.d/netbird "/etc/rc${RUNLEVEL}.d/S99netbird" || {
+            rollback
+            fail 'NetBird-Autostart-Link konnte nicht angelegt werden'
+        }
+    done
+    for RUNLEVEL in 0 1 6; do
+        mkdir -p "/etc/rc${RUNLEVEL}.d" || true
+        ln -sf ../init.d/netbird "/etc/rc${RUNLEVEL}.d/K01netbird" || true
+    done
 fi
 
 if ! "$INIT_SCRIPT" restart; then
