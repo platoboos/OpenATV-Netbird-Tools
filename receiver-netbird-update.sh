@@ -1,4 +1,3 @@
-Attempting to perform the InitializeDefaultDrives operation on the 'FileSystem' provider failed.
 #!/bin/sh
 
 set -u
@@ -159,4 +158,3 @@ nohup sh /tmp/netbird-finish-update.sh >/tmp/netbird-finish-update.nohup 2>&1 </
 rm -rf "$WORKDIR"
 echo "UPDATE_SCHEDULED: $OLD_VERSION -> $VERSION"
 exit 0
-

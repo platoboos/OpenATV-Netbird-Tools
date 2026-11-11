@@ -1,4 +1,3 @@
-Attempting to perform the InitializeDefaultDrives operation on the 'FileSystem' provider failed.
 [CmdletBinding()]
 param(
     [string]$BoxAddress,
@@ -240,4 +239,3 @@ Write-Host "Name:       $BoxName"
 Write-Host "NetBird-IP: $netBirdIp"
 Write-Host "Inventar:   $Inventory"
 Write-Host "Test:       ssh -i `"$SshKeyPath`" root@$netBirdIp"
-

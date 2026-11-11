@@ -1,4 +1,3 @@
-Attempting to perform the InitializeDefaultDrives operation on the 'FileSystem' provider failed.
 [CmdletBinding()]
 param(
     [ValidatePattern('^\d+\.\d+\.\d+$')]
@@ -295,4 +294,3 @@ $results | Format-Table Name, IP, Architecture, OldVersion, Target, Status -Auto
 if ($results.Status -contains 'FAILED') {
     exit 1
 }
-

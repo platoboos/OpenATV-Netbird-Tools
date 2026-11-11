@@ -1,4 +1,3 @@
-Attempting to perform the InitializeDefaultDrives operation on the 'FileSystem' provider failed.
 #!/bin/sh
 
 set -u
@@ -463,4 +462,3 @@ done
 
 printf '%s\n' "$LAST_STATUS" >&2
 fail 'Management wurde nicht als Connected gemeldet'
-
