@@ -12,6 +12,7 @@ RESULT='/tmp/netbird-update-result.log'
 LOCKDIR='/tmp/netbird-update.lock'
 LOWFLASH_ARCHIVE='/usr/lib/netbird-runtime/netbird.tar.gz'
 LOWFLASH_XZ_ARCHIVE='/usr/lib/netbird-runtime/netbird.xz'
+WRAPPER_BACKUP=''
 
 fail() {
     echo "UPDATE_ERROR: $*" >&2
@@ -220,6 +221,7 @@ fi
 rm -f "$BACKUP" "$ARCHIVE" "$XZ_UPDATE" "$XZ_WRAPPER" ${WRAPPER_BACKUP:-}
 EOF
 
+[ -s /tmp/netbird-finish-update.sh ] || fail 'Neustart-Helfer konnte nicht erzeugt werden'
 chmod 700 /tmp/netbird-finish-update.sh
 : > "$RESULT"
 nohup sh /tmp/netbird-finish-update.sh >/tmp/netbird-finish-update.nohup 2>&1 </dev/null &

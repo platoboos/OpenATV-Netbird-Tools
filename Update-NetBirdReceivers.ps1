@@ -365,7 +365,12 @@ foreach ($box in $boxes) {
             Start-Sleep -Seconds 10
             $check = Invoke-ReceiverSsh -IP $box.IP -Command "/usr/bin/netbird version 2>/dev/null; netbird status 2>/dev/null; cat /tmp/netbird-update-result.log 2>/dev/null || true"
             $lastOutput = $check.Output
-            if ($check.ExitCode -eq 0 -and $check.Output -match [regex]::Escape($Version) -and $check.Output -match 'Management:\s+Connected') {
+            if (
+                $check.ExitCode -eq 0 -and
+                $check.Output -match "(?m)^Daemon version:\s+$([regex]::Escape($Version))\s*$" -and
+                $check.Output -match 'Management:\s+Connected' -and
+                $check.Output -match "(?m)^UPDATE_OK:\s+$([regex]::Escape($Version))\s*$"
+            ) {
                 $verified = $true
                 break
             }
