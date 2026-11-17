@@ -17,6 +17,7 @@ if ([string]::IsNullOrWhiteSpace($Inventory)) { $Inventory = Join-Path $scriptDi
 if ([string]::IsNullOrWhiteSpace($CompatibilityKeyPath)) { $CompatibilityKeyPath = Join-Path $scriptDirectory '.secrets\netbird-receivers_rsa' }
 $helperScript = Join-Path $scriptDirectory 'receiver-netbird-update.sh'
 $initScript = Join-Path $scriptDirectory 'netbird-init-openatv.sh'
+$xzWrapperScript = Join-Path $scriptDirectory 'netbird-lowflash-xz-wrapper.sh'
 $logDirectory = Join-Path $scriptDirectory 'logs'
 
 if ([string]::IsNullOrWhiteSpace($Version)) {
@@ -46,7 +47,7 @@ foreach ($command in @('ssh.exe', 'scp.exe')) {
     }
 }
 
-foreach ($path in @($Inventory, $KeyPath, $helperScript, $initScript)) {
+foreach ($path in @($Inventory, $KeyPath, $helperScript, $initScript, $xzWrapperScript)) {
     if (-not (Test-Path -LiteralPath $path)) {
         throw "Erforderliche Datei fehlt: $path"
     }
@@ -137,6 +138,79 @@ function Get-NetBirdPackage {
     return $assetPath
 }
 
+function Get-NetBirdXzPackage {
+    param([Parameter(Mandatory)] [string]$Package)
+
+    $officialArchive = Get-NetBirdPackage -Package $Package
+    $xzDirectory = Join-Path $cacheDirectory "lowflash-$Package"
+    $xzPath = Join-Path $xzDirectory "netbird_${Version}_linux_${Package}.xz"
+    $binaryHashPath = "$xzPath.sha256"
+
+    if ((Test-Path -LiteralPath $xzPath) -and (Test-Path -LiteralPath $binaryHashPath)) {
+        $cachedBinaryHash = (Get-Content -LiteralPath $binaryHashPath -Raw).Trim().ToLowerInvariant()
+        if ($cachedBinaryHash -match '^[0-9a-f]{64}$') {
+            return [pscustomobject]@{
+                Path       = $xzPath
+                BinaryHash = $cachedBinaryHash
+            }
+        }
+    }
+
+    $sevenZip = $null
+    $sevenZipCommand = Get-Command '7z.exe' -ErrorAction SilentlyContinue
+    if ($sevenZipCommand) {
+        $sevenZip = $sevenZipCommand.Source
+    }
+    elseif (Test-Path -LiteralPath 'C:\Program Files\7-Zip\7z.exe') {
+        $sevenZip = 'C:\Program Files\7-Zip\7z.exe'
+    }
+    if (-not $sevenZip) {
+        throw 'Fuer Low-Flash-XZ-Updates wird 7-Zip benoetigt. Installiere 7-Zip unter C:\Program Files\7-Zip.'
+    }
+
+    Write-Host "Low-Flash-XZ-Paket fuer $Package erzeugen..." -ForegroundColor Cyan
+    New-Item -ItemType Directory -Force -Path $xzDirectory | Out-Null
+    $stagingDirectory = Join-Path $xzDirectory 'staging'
+    if (Test-Path -LiteralPath $stagingDirectory) {
+        Remove-Item -LiteralPath $stagingDirectory -Recurse -Force
+    }
+    New-Item -ItemType Directory -Force -Path $stagingDirectory | Out-Null
+
+    try {
+        & $sevenZip x -y "-o$stagingDirectory" $officialArchive | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw '7-Zip konnte das offizielle gzip-Archiv nicht entpacken.' }
+
+        $tarPath = Get-ChildItem -LiteralPath $stagingDirectory -Filter '*.tar' | Select-Object -First 1 -ExpandProperty FullName
+        if (-not $tarPath) { throw 'Das entpackte NetBird-TAR-Archiv wurde nicht gefunden.' }
+
+        $binaryDirectory = Join-Path $stagingDirectory 'binary'
+        New-Item -ItemType Directory -Force -Path $binaryDirectory | Out-Null
+        & $sevenZip x -y "-o$binaryDirectory" $tarPath 'netbird' | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw '7-Zip konnte die NetBird-Binaerdatei nicht aus dem TAR-Archiv entpacken.' }
+
+        $binaryPath = Join-Path $binaryDirectory 'netbird'
+        if (-not (Test-Path -LiteralPath $binaryPath)) { throw 'Die NetBird-Binaerdatei fehlt im offiziellen Archiv.' }
+        $binaryHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $binaryPath).Hash.ToLowerInvariant()
+
+        if (Test-Path -LiteralPath $xzPath) { Remove-Item -LiteralPath $xzPath -Force }
+        & $sevenZip a -txz -mx=9 $xzPath $binaryPath | Out-Null
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $xzPath)) {
+            throw '7-Zip konnte das Low-Flash-XZ-Paket nicht erzeugen.'
+        }
+        Set-Content -LiteralPath $binaryHashPath -Value $binaryHash -Encoding ASCII
+    }
+    finally {
+        if (Test-Path -LiteralPath $stagingDirectory) {
+            Remove-Item -LiteralPath $stagingDirectory -Recurse -Force
+        }
+    }
+
+    return [pscustomobject]@{
+        Path       = $xzPath
+        BinaryHash = $binaryHash
+    }
+}
+
 function Add-Result {
     param($Box, [string]$Architecture, [string]$OldVersion, [string]$Status, [string]$Details)
 
@@ -159,6 +233,7 @@ Write-Host 'Die Boxen werden bewusst nacheinander aktualisiert.' -ForegroundColo
 foreach ($box in $boxes) {
     $architecture = $null
     $oldVersion = $null
+    $installMode = 'standard'
 
     Write-Host ''
     Write-Host "[$($box.Name)] $($box.IP)" -ForegroundColor Cyan
@@ -170,7 +245,7 @@ foreach ($box in $boxes) {
     }
 
     try {
-        $probe = Invoke-ReceiverSsh -IP $box.IP -Command "uname -m; opkg print-architecture 2>/dev/null || true; if [ -f /usr/lib/netbird-runtime/netbird.tar.gz ]; then echo LOWFLASH_MODE; else /usr/bin/netbird version 2>/dev/null || true; fi"
+        $probe = Invoke-ReceiverSsh -IP $box.IP -Command "uname -m; opkg print-architecture 2>/dev/null || true; if [ -f /usr/lib/netbird-runtime/netbird.xz ]; then echo LOWFLASH_XZ_MODE; elif [ -f /usr/lib/netbird-runtime/netbird.tar.gz ]; then echo LOWFLASH_TAR_MODE; fi; /usr/bin/netbird version 2>/dev/null || true"
         if ($probe.ExitCode -ne 0) {
             Write-Warning 'SSH ist noch nicht eingerichtet oder durch eine Policy gesperrt. Box wird zurueckgestellt.'
             Add-Result -Box $box -Architecture 'unbekannt' -OldVersion ([string]$box.Version) -Status 'SSH_SETUP_REQUIRED' -Details $probe.Output
@@ -197,25 +272,42 @@ foreach ($box in $boxes) {
         $oldVersion = if ($versionMatches.Count -gt 0) {
             $versionMatches[$versionMatches.Count - 1].Value.Trim()
         }
-        elseif ($probe.Output -match '(?m)^LOWFLASH_MODE\s*$' -and [string]$box.Version -match '^\d+\.\d+\.\d+$') {
+        elseif ($probe.Output -match '(?m)^LOWFLASH_(?:XZ|TAR)_MODE\s*$' -and [string]$box.Version -match '^\d+\.\d+\.\d+$') {
             [string]$box.Version
         }
         else {
             'unbekannt'
         }
 
-        Write-Host "Architektur: $architecture; installiert: $oldVersion" -ForegroundColor Gray
+        if ($probe.Output -match '(?m)^LOWFLASH_XZ_MODE\s*$') {
+            $installMode = 'lowflash-xz'
+        }
+        elseif ($probe.Output -match '(?m)^LOWFLASH_TAR_MODE\s*$') {
+            $installMode = 'lowflash-tar'
+        }
+
+        Write-Host "Architektur: $architecture; installiert: $oldVersion; Modus: $installMode" -ForegroundColor Gray
         if (-not $Force -and $oldVersion -eq $Version) {
             Write-Host 'Bereits aktuell, wird uebersprungen.' -ForegroundColor Green
             Add-Result -Box $box -Architecture $architecture -OldVersion $oldVersion -Status 'SKIPPED' -Details 'Bereits aktuell'
             continue
         }
 
-        $archive = Get-NetBirdPackage -Package $architecture
+        $binaryHash = ''
+        if ($installMode -eq 'lowflash-xz') {
+            $xzPackage = Get-NetBirdXzPackage -Package $architecture
+            $archive = $xzPackage.Path
+            $binaryHash = $xzPackage.BinaryHash
+            $remoteArchivePath = '/tmp/netbird-update.xz'
+        }
+        else {
+            $archive = Get-NetBirdPackage -Package $architecture
+            $remoteArchivePath = '/tmp/netbird-update.tar.gz'
+        }
 
         Write-Host 'Archiv, Dienststeuerung und Update-Helfer uebertragen...'
         $localArchiveHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
-        $remoteArchive = Invoke-ReceiverSsh -IP $box.IP -Command "sha256sum /tmp/netbird-update.tar.gz 2>/dev/null || true"
+        $remoteArchive = Invoke-ReceiverSsh -IP $box.IP -Command "sha256sum '$remoteArchivePath' 2>/dev/null || true"
         $remoteArchiveIsComplete = $remoteArchive.ExitCode -eq 0 -and $remoteArchive.Output -match "(?im)^$([regex]::Escape($localArchiveHash))\s+"
 
         if ($remoteArchiveIsComplete) {
@@ -225,7 +317,7 @@ foreach ($box in $boxes) {
             $previousPreference = $ErrorActionPreference
             try {
                 $ErrorActionPreference = 'Continue'
-                & scp.exe -O @sshOptions $archive "root@$($box.IP):/tmp/netbird-update.tar.gz"
+                & scp.exe -O @sshOptions $archive "root@$($box.IP):$remoteArchivePath"
                 $scpExitCode = $LASTEXITCODE
             }
             finally {
@@ -236,7 +328,7 @@ foreach ($box in $boxes) {
                 # Bei langsamen MIPS-Boxen kann die SSH-Verbindung direkt nach
                 # dem letzten Byte abbrechen. Eine identische SHA-256-Summe ist
                 # in diesem Fall verlaesslicher als der scp-Rueckgabecode.
-                $remoteArchive = Invoke-ReceiverSsh -IP $box.IP -Command "sha256sum /tmp/netbird-update.tar.gz 2>/dev/null || true"
+                $remoteArchive = Invoke-ReceiverSsh -IP $box.IP -Command "sha256sum '$remoteArchivePath' 2>/dev/null || true"
                 $remoteArchiveIsComplete = $remoteArchive.ExitCode -eq 0 -and $remoteArchive.Output -match "(?im)^$([regex]::Escape($localArchiveHash))\s+"
                 if (-not $remoteArchiveIsComplete) {
                     throw 'Upload des NetBird-Archivs fehlgeschlagen und die entfernte Datei ist nicht vollstaendig.'
@@ -253,7 +345,14 @@ foreach ($box in $boxes) {
             throw 'Upload der NetBird-Dienststeuerung fehlgeschlagen.'
         }
 
-        $schedule = Invoke-ReceiverSsh -IP $box.IP -Command "chmod 700 /tmp/netbird-receiver-update.sh /tmp/netbird-init-openatv.sh && cp /tmp/netbird-init-openatv.sh /etc/init.d/netbird && chmod 755 /etc/init.d/netbird && sh /tmp/netbird-receiver-update.sh '$Version'"
+        if ($installMode -eq 'lowflash-xz') {
+            & scp.exe -O @sshOptions $xzWrapperScript "root@$($box.IP):/tmp/netbird-lowflash-xz-wrapper.sh"
+            if ($LASTEXITCODE -ne 0) {
+                throw 'Upload des Low-Flash-XZ-Starters fehlgeschlagen.'
+            }
+        }
+
+        $schedule = Invoke-ReceiverSsh -IP $box.IP -Command "chmod 700 /tmp/netbird-receiver-update.sh /tmp/netbird-init-openatv.sh && cp /tmp/netbird-init-openatv.sh /etc/init.d/netbird && chmod 755 /etc/init.d/netbird && sh /tmp/netbird-receiver-update.sh '$Version' '$binaryHash'"
         if ($schedule.ExitCode -ne 0 -or $schedule.Output -notmatch 'UPDATE_SCHEDULED') {
             throw "Update konnte nicht geplant werden: $($schedule.Output)"
         }

@@ -120,6 +120,10 @@ uebersprungen. Mit `-Force` kann eine Version erneut installiert werden.
 - Alte Images ohne `start-stop-daemon` werden ebenfalls unterstützt.
 - Im Low-Flash-Modus bleibt nur das komprimierte Archiv dauerhaft im Flash;
   die große Binärdatei wird beim Start nach `/tmp` entpackt.
+- Sehr kleine Receiver werden automatisch am vorhandenen `netbird.xz` erkannt.
+  Der Windows-Updater erzeugt dafuer mit 7-Zip ein besonders kleines XZ-Paket,
+  prueft die Binärdatei per SHA-256 und verwendet auf der Box einen eigenen
+  Low-Flash-XZ-Austausch mit automatischem Rollback.
 
 ## Inventar pflegen
 
